@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, session, redirect, flash
 from flask_session import Session
 from sklearn import svm
 import cv2
+import pickle
 import sqlite3
 import numpy as np
 from PIL import Image
@@ -23,6 +24,8 @@ USERNAME=0
 PASSWORD=1
 ID=2
 DATASET_PATH="static/datasets"
+KERNEL="rbf"
+CVALUE=1.9
 def load_images_from_folder(folder_path, img_size=(24, 24)):
     images = []
     labels = []
@@ -114,26 +117,25 @@ def index():
     if request.method=="GET":
         return render_template("index.html")
     else:
-        # try:
         file=request.files["image"].stream
-        file=Image.open(file)
-        transformed=preprocessedsteps(file)
+        file=Image.open(file).convert("L")
+        file=np.array(file)
+        #Rewrite this part
+        img_resized = cv2.resize(file, (24, 24))
+        img_flattened = img_resized.flatten().reshape(1,-1)
         db=sqlite3.connect("static/users.db")
         cursor=db.cursor()
         data=cursor.execute("SELECT class FROM classes WHERE id=?", (session["user_id"],)).fetchall()
         classes=[datum[0].capitalize() for datum in data]
         classes.extend(CLASSES)
         classes.sort()
-        model=
+        model=svm.SVC(kernel=KERNEL, C=CVALUE)
         if os.path.exists(f"{DATASET_PATH}/train{session['user_id']}/data.pt"):
-            model.load_state_dict(torch.load(f"{DATASET_PATH}/train{session['user_id']}/data.pt"))
+            model=pickle.load(open(f"{DATASET_PATH}/train{session['user_id']}/data.pt", 'rb'))
         else:
-            model.load_state_dict(torch.load("static/model.pt"))
-        model.eval()
-        with torch.inference_mode():
-            yhat=torch.argmax(model(transformed.unsqueeze(1)))
-        
-        return render_template("prediction.html", name=classes[yhat.numpy()])
+            model=pickle.load(open(f"static/model.pt", 'rb'))
+        yhat=model.predict(img_flattened)
+        return render_template("prediction.html", name=yhat[0])
         # except:
         #     return redirect("/")
 @app.route("/train", methods=["GET", "POST"])
@@ -152,8 +154,6 @@ def train():
             return render_template("error.html", message="Class is already being used")
         
         images=request.files.getlist("images")
-        if len(images)!=12:
-            return render_template("error.html", message="Must provide exactly 12 images")
         #WRITE LOTS OF CODE BEFORE MAKING THE DIRECTORY
         os.system(f"mkdir {DATASET_PATH}/train{session['user_id']}/{classname}")
         for image in images:
@@ -161,34 +161,14 @@ def train():
             filename=filename.replace("/", "")
             save_path = f"{DATASET_PATH}/train{session['user_id']}/{classname}/{filename}"
             image.save(save_path)
-        traindataset=torchvision.datasets.ImageFolder(root=f"static/datasets/train{session['user_id']}", transform=preprocessedsteps)
-        trainloader=DataLoader(traindataset, 2, shuffle=True)
-        lossfn=nn.CrossEntropyLoss()
         db=sqlite3.connect("static/users.db")
         cursor=db.cursor()
         data=cursor.execute("SELECT class FROM classes WHERE id=?", (session["user_id"],)).fetchall()
         classes=[datum[0].capitalize() for datum in data]
         classes.extend(CLASSES)
-        while True:
-            model=ImageModel(len(classes)+1)
-            optimizer=torch.optim.SGD(params=model.parameters(), lr=0.008, momentum=0.8)
-            epochs=16
-            losses=[]
-            for epoch in range(epochs):
-                for x,y in trainloader:
-                    model.train()
-                    yhat=model(x)
-                    loss=lossfn(yhat, y)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    if epoch==epochs-1 and loss.item()<0.5:
-                        losses.append(loss.item())
-                print(f"Epoch: {epoch} loss:{loss.item()}")
-
-            if len(losses)>4 and loss.item()<0.8:
-                break
-        torch.save(model.state_dict(), f"{DATASET_PATH}/train{session['user_id']}/data.pt")
+        model=svm.SVC(kernel=KERNEL, C=CVALUE)
+        model.fit()
+        pickle.dump(model, open(f"{DATASET_PATH}/train{session['user_id']}/data.pt", 'wb'))
         db=sqlite3.connect("static/users.db")
         cursor=db.cursor()
         cursor.execute("INSERT INTO classes (id, class) VALUES (?,?)", (session["user_id"], classname,))
@@ -210,7 +190,6 @@ def reset():
         for clas in CLASSES:
             os.system(f"cp -R static/{clas} {DATASET_PATH}/train{session['user_id']}")
         return redirect("/")
-        
 
 
 @app.route("/logout")
@@ -224,4 +203,4 @@ def logout():
   return redirect("/")
 
 if __name__=="__main__":
-    app.run()
+    app.run(port=3000, debug=True)
