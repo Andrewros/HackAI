@@ -1,32 +1,47 @@
+import cv2
+import numpy as np
+from joblib import load
+import sklearn
+import warnings
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn import svm
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
+import sklearn
 import numpy as np
 import cv2
 import os
-from flask import Flask
-from flask_session import Session
-from sklearn.metrics import accuracy_score
-# Function to load images from folders and assign labels
-def load_images_from_folder(folder_path, img_size=(24, 24)):
-    images = []
-    labels = []
-    class_names = os.listdir(folder_path)  # Folder names as class labels
+from joblib import dump, load  # Use joblib instead of pickle
+
+
+
+model, label_encoder, trained_version = load("model.joblib")
+
+
+# Function to preprocess a single test image
+def preprocess_image(image_path, img_size=(24, 24)):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError(f"Error loading image: {image_path}. Check the file path.")
     
-    for class_name in class_names:
-        class_folder = os.path.join(folder_path, class_name)
-        if os.path.isdir(class_folder):
-            for filename in os.listdir(class_folder):
-                img_path = os.path.join(class_folder, filename)
-                img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    img_resized = cv2.resize(img, img_size)
-                    img_flattened = img_resized.flatten()
-                    images.append(img_flattened)
-                    labels.append(class_name)  # Use folder name as label
-    return np.array(images), np.array(labels)
-x,y=load_images_from_folder("./trainmult")
-xtrain, xtest, ytrain, ytest=train_test_split(x,y, test_size=0.1, random_state=42)
-KERNEL="rbf"
-CVALUE=1.9
-model=svm.SVC(kernel=KERNEL, C=CVALUE)
-model.fit(xtrain, ytrain)
+    img_resized = cv2.resize(img, img_size)  # Resize to match training images
+    img_flattened = img_resized.flatten()  # Flatten the image to a 1D array
+    
+    return img_flattened.reshape(1, -1)  # Reshape for model input
+
+# Prompt user to enter an image file path
+image_path = "/Users/andrewrosenblum/Desktop/IMG_3561.jpg"
+
+try:
+    # Preprocess the image
+    test_image = preprocess_image(image_path)
+
+    # Predict class label
+    predicted_label = model.predict(test_image)
+    predicted_class = label_encoder.inverse_transform(predicted_label)
+
+    print(f"Predicted class: {predicted_class[0]}")
+
+except Exception as e:
+    print(f"Error: {e}")

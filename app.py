@@ -1,15 +1,29 @@
 from flask import Flask, render_template, request, session, redirect, flash
 from flask_session import Session
-from sklearn import svm
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 import cv2
-import pickle
+from joblib import dump, load
 import sqlite3
 import numpy as np
 from PIL import Image
 from werkzeug.security import check_password_hash, generate_password_hash
 import os
 from functools import wraps
+
+# Flask App Setup
+app = Flask(__name__)
+app.config["SESSION_TYPE"] = "filesystem"
+Session(app)
+
+# Constants
+PIXELSIZE = 24
+CLASSES = ['Andrew', 'Sai']
+DATASET_PATH = "static/datasets"
+N_ESTIMATORS = 100  # Number of trees in RandomForest
+MAX_DEPTH = 10  # Max depth of trees
+
+# Authentication Decorator
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -17,18 +31,8 @@ def login_required(f):
             return redirect("/login")
         return f(*args, **kwargs)
     return decorated_function
-app=Flask(__name__)
-PIXELSIZE=24
-scaler=StandardScaler()
-CLASSES = ['Andrew', 'Brad', 'Matthew']
-app.config["SESSION_TYPE"] = "filesystem"
-Session(app)
-USERNAME=0
-PASSWORD=1
-ID=2
-DATASET_PATH="static/datasets"
-KERNEL="rbf"
-CVALUE=1.9
+
+# Function to Load Images from Folders
 def load_images_from_folder(folder_path, img_size=(PIXELSIZE, PIXELSIZE)):
     images = []
     labels = []
@@ -44,165 +48,146 @@ def load_images_from_folder(folder_path, img_size=(PIXELSIZE, PIXELSIZE)):
                     img_resized = cv2.resize(img, img_size)
                     img_flattened = img_resized.flatten()
                     images.append(img_flattened)
-                    labels.append(class_name)  # Use folder name as label
+                    labels.append(class_name)
+
     return np.array(images), np.array(labels)
+
+# Function to Preprocess a Single Image
+def preprocess_image(image_path, img_size=(24, 24)):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError(f"Error loading image: {image_path}. Check the file path.")
+    
+    img_resized = cv2.resize(img, img_size)  # Resize to match training images
+    img_flattened = img_resized.flatten()  # Flatten the image to a 1D array
+    
+    return img_flattened.reshape(1, -1)
+
+# Login Route
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    # Forget any user_id
-    session.clear() 
-    # User reached route via POST (as by submitting a form via POST)
-    if request.method == "POST":    
-      # Ensure username was submitted
-        if not request.form.get("username"):
-            return "must provide username"    
-      # Ensure password was submitted
-        elif not request.form.get("password"):
-            return "must provide password"   
-      # Query database for username
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
+    session.clear()
+    if request.method == "POST":
+        if not request.form.get("username") or not request.form.get("password"):
+            return "Must provide username and password"
+
+        db = sqlite3.connect("static/users.db")
+        cursor = db.cursor()
         try:
-            rows = cursor.execute("SELECT * FROM users WHERE username = ?",
-                            request.form.get("username")).fetchone()
-            # Ensure username exists and password is correct
-            if not check_password_hash(rows[PASSWORD],
-                                                        request.form.get("password")):
-                return render_template("error.html", message="invalid username and/or password")
+            rows = cursor.execute("SELECT * FROM users WHERE username = ?", (request.form.get("username"),)).fetchone()
+            if not rows or not check_password_hash(rows[1], request.form.get("password")):
+                return render_template("error.html", message="Invalid username and/or password")
 
-            # Remember which user has logged in
-            session["user_id"] = rows[ID]
-
-            # Redirect user to home page
+            session["user_id"] = rows[2]
             return redirect("/")
         except:
             return render_template("error.html", message="Something you entered was invalid")
-
-  # User reached route via GET (as by clicking a link or via redirect)
     else:
         return render_template("login.html")
 
+# Registration Route
 @app.route("/register", methods=["GET", "POST"])
 def register():
     session.clear()
     if request.method == "POST":
-        # Ensure username was submitted
-    
-        if not request.form.get("username"):
-          return "must provide username"
-    
-        # Ensure password was submitted
-        elif not request.form.get("password") or not request.form.get(
-            "password2") or request.form.get("password") != request.form.get(
-              "password2"):
-          return "must provide password"
+        if not request.form.get("username") or not request.form.get("password"):
+            return "Must provide username and password"
+
         hashedpassword = generate_password_hash(request.form.get("password"))
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
-        cursor.execute("INSERT INTO users(username, password) VALUES (?, ?)",
-                   (request.form.get("username"), hashedpassword))
+        db = sqlite3.connect("static/users.db")
+        cursor = db.cursor()
+        cursor.execute("INSERT INTO users(username, password) VALUES (?, ?)", (request.form.get("username"), hashedpassword))
         db.commit()
-        rows = cursor.execute("SELECT * FROM users WHERE username = ?",
-                          (request.form.get("username"), )).fetchone()
-        session["user_id"] = rows[ID]
-    # Remember which user has logged in
-
-    # Redirect user to home page
+        rows = cursor.execute("SELECT * FROM users WHERE username = ?", (request.form.get("username"),)).fetchone()
+        session["user_id"] = rows[2]
         return redirect("/")
-
-  # User reached route via GET (as by clicking a link or via redirect)
     else:
         return render_template("register.html")
 
-
+# Home Route (Prediction)
 @app.route("/", methods=["GET", "POST"])
 @login_required
 def index():
-    if request.method=="GET":
+    if request.method == "GET":
         return render_template("index.html")
     else:
-        file=request.files["image"].stream
-        file=Image.open(file).convert("L")
-        file=np.array(file)
-        #Rewrite this part
-        img_resized = cv2.resize(file, (PIXELSIZE, PIXELSIZE))
-        img_flattened = img_resized.flatten().reshape(1,-1)
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
-        data=cursor.execute("SELECT class FROM classes WHERE id=?", (session["user_id"],)).fetchall()
-        classes=[datum[0].capitalize() for datum in data]
-        classes.extend(CLASSES)
-        classes.sort()
-        if os.path.exists(f"{DATASET_PATH}/train{session['user_id']}/data.pt"):
-            model=pickle.load(open(f"{DATASET_PATH}/train{session['user_id']}/data.pt", 'rb'))
-        else:
-            model=pickle.load(open(f"static/model.pt", 'rb'))
-        yhat=model.predict(img_flattened)
-        return render_template("prediction.html", name=yhat[0])
-        # except:
-        #     return redirect("/")
+        try:
+            file = request.files["image"].stream
+            file = Image.open(file).convert("L")
+            file = np.array(file)
+
+            # Image preprocessing
+            img_resized = cv2.resize(file, (PIXELSIZE, PIXELSIZE))
+            img_flattened = img_resized.flatten().reshape(1, -1)
+
+            # Load model
+            model_path = f"{DATASET_PATH}/train{session['user_id']}/data.joblib"
+            if os.path.exists(model_path):
+                model, label_encoder, trained_version = load(model_path)
+            else:
+                model, label_encoder, trained_version = load("static/model.joblib")
+
+            # Predict
+            yhat = model.predict(img_flattened)
+            predicted_class = label_encoder.inverse_transform(yhat)
+
+            return render_template("prediction.html", name=predicted_class[0])
+        except Exception as e:
+            return render_template("error.html", message=str(e))
+
+# Training Route
 @app.route("/train", methods=["GET", "POST"])
 @login_required
 def train():
-    if request.method=="GET":
+    if request.method == "GET":
         return render_template("train.html")
     else:
-        classname=request.form.get("class").capitalize()
-        if not os.path.exists(f"{DATASET_PATH}/train{session['user_id']}"):
-            os.system(f"mkdir {DATASET_PATH}/train{session['user_id']}")
+        classname = request.form.get("class").capitalize()
+        user_train_path = f"{DATASET_PATH}/train{session['user_id']}"
+
+        # Create directory if not exists
+        if not os.path.exists(user_train_path):
+            os.makedirs(user_train_path)
             for clas in CLASSES:
-                os.system(f"cp -R static/{clas} {DATASET_PATH}/train{session['user_id']}")
-        
-        if os.path.exists(f"{DATASET_PATH}/train{session['user_id']}/{classname}"):
+                os.system(f"cp -R static/{clas} {user_train_path}")
+
+        if os.path.exists(f"{user_train_path}/{classname}"):
             return render_template("error.html", message="Class is already being used")
-        
-        images=request.files.getlist("images")
-        #WRITE LOTS OF CODE BEFORE MAKING THE DIRECTORY
-        os.system(f"mkdir {DATASET_PATH}/train{session['user_id']}/{classname}")
-        for image in images:
-            filename = image.filename
-            filename=filename.replace("/", "")
-            save_path = f"{DATASET_PATH}/train{session['user_id']}/{classname}/{filename}"
+
+        # Save uploaded images
+        os.makedirs(f"{user_train_path}/{classname}")
+        for image in request.files.getlist("images"):
+            filename = image.filename.replace("/", "")
+            save_path = f"{user_train_path}/{classname}/{filename}"
             image.save(save_path)
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
-        data=cursor.execute("SELECT class FROM classes WHERE id=?", (session["user_id"],)).fetchall()
-        classes=[datum[0].capitalize() for datum in data]
-        classes.extend(CLASSES)
-        model=svm.SVC(kernel=KERNEL, C=CVALUE)
-        model.fit()
-        pickle.dump(model, open(f"{DATASET_PATH}/train{session['user_id']}/data.pt", 'wb'))
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
-        cursor.execute("INSERT INTO classes (id, class) VALUES (?,?)", (session["user_id"], classname,))
+
+        # Load dataset
+        x, y = load_images_from_folder(user_train_path)
+        label_encoder = LabelEncoder()
+        y = label_encoder.fit_transform(y)
+
+        # Train Random Forest Model
+        model = RandomForestClassifier(n_estimators=N_ESTIMATORS, max_depth=MAX_DEPTH, random_state=42)
+        model.fit(x, y)
+
+        # Save model using joblib
+        dump((model, label_encoder), f"{user_train_path}/data.joblib")
+
+        # Update database
+        db = sqlite3.connect("static/users.db")
+        cursor = db.cursor()
+        cursor.execute("INSERT INTO classes (id, class) VALUES (?, ?)", (session["user_id"], classname,))
         db.commit()
+
         flash("Training complete")
         return redirect("/")
-@app.route("/reset", methods=["GET", "POST"])
-@login_required
-def reset():
-    if request.method=="GET":
-        return render_template("reset.html")
-    else:
-        db=sqlite3.connect("static/users.db")
-        cursor=db.cursor()
-        cursor.execute("DELETE from classes WHERE id=?", (session['user_id'],))
-        db.commit()
-        os.system(f"rm -rf static/datasets/train{session['user_id']}")
-        os.system(f"mkdir {DATASET_PATH}/train{session['user_id']}")
-        for clas in CLASSES:
-            os.system(f"cp -R static/{clas} {DATASET_PATH}/train{session['user_id']}")
-        return redirect("/")
 
-
+# Logout Route
 @app.route("/logout")
 def logout():
-  """Log user out"""
+    session.clear()
+    return redirect("/")
 
-  # Forget any user_id
-  session.clear()
-
-  # Redirect user to login form
-  return redirect("/")
-
-if __name__=="__main__":
+# Run Flask App
+if __name__ == "__main__":
     app.run(port=3000, debug=True)
