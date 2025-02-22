@@ -5,13 +5,12 @@ block main %}
 	<form action="/train" method="post" enctype="multipart/form-data">
 		Name of thing in image:
 		<input type="text" name="class" placeholder="Name" /><br />
-		Folder(Must be exactly 12 images):
+		Folder(Must be exactly 11 images):
 		<input type="file" name="images" multiple directory="" webkitdirectory="" />
 		<button class="btn btn-primary" type="submit">Train</button>
 		<br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br /><br />
 	</form>
 </div>
-<h5>This may take a long time</h5>
 <script type="text/javascript">
 	function postloader() {
 		document.getElementById("loading").style.display = "block";

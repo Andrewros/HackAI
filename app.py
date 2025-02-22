@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, session, redirect, flash
 from flask_session import Session
 from sklearn import svm
+from sklearn.preprocessing import StandardScaler
 import cv2
 import pickle
 import sqlite3
@@ -17,6 +18,8 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 app=Flask(__name__)
+PIXELSIZE=24
+scaler=StandardScaler()
 CLASSES = ['Andrew', 'Brad', 'Matthew']
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
@@ -26,7 +29,7 @@ ID=2
 DATASET_PATH="static/datasets"
 KERNEL="rbf"
 CVALUE=1.9
-def load_images_from_folder(folder_path, img_size=(24, 24)):
+def load_images_from_folder(folder_path, img_size=(PIXELSIZE, PIXELSIZE)):
     images = []
     labels = []
     class_names = os.listdir(folder_path)  # Folder names as class labels
@@ -121,7 +124,7 @@ def index():
         file=Image.open(file).convert("L")
         file=np.array(file)
         #Rewrite this part
-        img_resized = cv2.resize(file, (24, 24))
+        img_resized = cv2.resize(file, (PIXELSIZE, PIXELSIZE))
         img_flattened = img_resized.flatten().reshape(1,-1)
         db=sqlite3.connect("static/users.db")
         cursor=db.cursor()
@@ -129,7 +132,6 @@ def index():
         classes=[datum[0].capitalize() for datum in data]
         classes.extend(CLASSES)
         classes.sort()
-        model=svm.SVC(kernel=KERNEL, C=CVALUE)
         if os.path.exists(f"{DATASET_PATH}/train{session['user_id']}/data.pt"):
             model=pickle.load(open(f"{DATASET_PATH}/train{session['user_id']}/data.pt", 'rb'))
         else:
