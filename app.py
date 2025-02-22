@@ -7,6 +7,7 @@ from joblib import dump, load
 import sqlite3
 import numpy as np
 from PIL import Image
+import sklearn
 from werkzeug.security import check_password_hash, generate_password_hash
 import os
 from functools import wraps
@@ -144,44 +145,117 @@ def train():
     else:
         classname = request.form.get("class").capitalize()
         user_train_path = f"{DATASET_PATH}/train{session['user_id']}"
+        model_path = f"{user_train_path}/data.joblib"
 
-        # Create directory if not exists
+        # Ensure user's dataset directory exists
         if not os.path.exists(user_train_path):
             os.makedirs(user_train_path)
             for clas in CLASSES:
                 os.system(f"cp -R static/{clas} {user_train_path}")
 
-        if os.path.exists(f"{user_train_path}/{classname}"):
-            return render_template("error.html", message="Class is already being used")
+        class_folder = f"{user_train_path}/{classname}"
+        if os.path.exists(class_folder):
+            return render_template("error.html", message="Class already exists.")
+
+        # Create a directory for the new class
+        os.makedirs(class_folder)
 
         # Save uploaded images
-        os.makedirs(f"{user_train_path}/{classname}")
         for image in request.files.getlist("images"):
             filename = image.filename.replace("/", "")
-            save_path = f"{user_train_path}/{classname}/{filename}"
+            save_path = os.path.join(class_folder, filename)
             image.save(save_path)
 
-        # Load dataset
-        x, y = load_images_from_folder(user_train_path)
-        label_encoder = LabelEncoder()
-        y = label_encoder.fit_transform(y)
+        # Load the dataset (new + existing)
+        x_new, y_new = load_images_from_folder(user_train_path)
 
-        # Train Random Forest Model
+        # Try loading an existing model
+        if os.path.exists(model_path):
+            model, label_encoder, trained_version = load(model_path)
+
+            # Update label encoder with new classes
+            all_labels = list(label_encoder.classes_) + [classname]
+            label_encoder.fit(all_labels)  # Update the label encoder with all classes
+
+            # Transform labels using the updated encoder
+            y_new = label_encoder.transform(y_new)
+        else:
+            label_encoder = LabelEncoder()
+            y_new = label_encoder.fit_transform(y_new)
+
+        # Train or Retrain the Model
         model = RandomForestClassifier(n_estimators=N_ESTIMATORS, max_depth=MAX_DEPTH, random_state=42)
-        model.fit(x, y)
+        model.fit(x_new, y_new)
 
-        # Save model using joblib
-        dump((model, label_encoder), f"{user_train_path}/data.joblib")
+        # Save the updated model
+        dump((model, label_encoder, sklearn.__version__), model_path)
 
-        # Update database
+        # Update the database
         db = sqlite3.connect("static/users.db")
         cursor = db.cursor()
         cursor.execute("INSERT INTO classes (id, class) VALUES (?, ?)", (session["user_id"], classname,))
         db.commit()
 
-        flash("Training complete")
+        flash("Training complete with updated data!")
         return redirect("/")
 
+# def train():
+#     if request.method == "GET":
+#         return render_template("train.html")
+#     else:
+#         classname = request.form.get("class").capitalize()
+#         user_train_path = f"{DATASET_PATH}/train{session['user_id']}"
+
+#         # Create directory if not exists
+#         if not os.path.exists(user_train_path):
+#             os.makedirs(user_train_path)
+#             for clas in CLASSES:
+#                 os.system(f"cp -R static/{clas} {user_train_path}")
+
+#         if os.path.exists(f"{user_train_path}/{classname}"):
+#             return render_template("error.html", message="Class is already being used")
+
+#         # Save uploaded images
+#         os.makedirs(f"{user_train_path}/{classname}")
+#         for image in request.files.getlist("images"):
+#             filename = image.filename.replace("/", "")
+#             save_path = f"{user_train_path}/{classname}/{filename}"
+#             image.save(save_path)
+
+#         # Load dataset
+#         x, y = load_images_from_folder(user_train_path)
+#         label_encoder = LabelEncoder()
+#         y = label_encoder.fit_transform(y)
+
+#         # Train Random Forest Model
+#         model = RandomForestClassifier(n_estimators=N_ESTIMATORS, max_depth=MAX_DEPTH, random_state=42)
+#         model.fit(x, y)
+
+#         dump((model, label_encoder, sklearn.__version__), f"{user_train_path}/data.joblib")
+
+#         # Update database
+#         db = sqlite3.connect("static/users.db")
+#         cursor = db.cursor()
+#         cursor.execute("INSERT INTO classes (id, class) VALUES (?, ?)", (session["user_id"], classname,))
+#         db.commit()
+
+#         flash("Training complete")
+#         return redirect("/")
+@app.route("/reset", methods=["GET", "POST"])
+@login_required
+def reset():
+    if request.method=="GET":
+        return render_template("reset.html")
+    else:
+        db=sqlite3.connect("static/users.db")
+        cursor=db.cursor()
+        cursor.execute("DELETE from classes WHERE id=?", (session['user_id'],))
+        db.commit()
+        os.system(f"rm -rf static/datasets/train{session['user_id']}")
+        os.system(f"mkdir {DATASET_PATH}/train{session['user_id']}")
+        for clas in CLASSES:
+            os.system(f"cp -R static/{clas} {DATASET_PATH}/train{session['user_id']}")
+        return redirect("/")
 # Logout Route
 @app.route("/logout")
 def logout():
